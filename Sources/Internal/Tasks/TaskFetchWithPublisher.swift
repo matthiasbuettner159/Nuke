@@ -37,15 +37,7 @@ final class TaskFetchWithPublisher: ImagePipelineTask<(Data, URLResponse?)> {
             finish() // Finish the operation!
             guard let self = self else { return }
             self.async {
-                switch result {
-                case .finished:
-                    guard !self.data.isEmpty else {
-                        return self.send(error: .dataLoadingFailed(URLError(.resourceUnavailable, userInfo: [:])))
-                    }
-                    self.send(value: (self.data, nil), isCompleted: true)
-                case .failure(let error):
-                    self.send(error: .dataLoadingFailed(error))
-                }
+                self.publisherDidFinish(result: result)
             }
         }, receiveValue: { [weak self] data in
             guard let self = self else { return }
@@ -57,5 +49,33 @@ final class TaskFetchWithPublisher: ImagePipelineTask<(Data, URLResponse?)> {
         onCancelled = {
             cancellable.cancel()
         }
+    }
+
+    private func publisherDidFinish(result: PublisherCompletion) {
+        switch result {
+        case .finished:
+            guard !data.isEmpty else {
+                return send(error: .dataLoadingFailed(URLError(.resourceUnavailable, userInfo: [:])))
+            }
+            if let dataCache = pipeline.delegate.dataCache(for: request, pipeline: pipeline), shouldStoreDataInDiskCache() {
+                let key = pipeline.cache.makeDataCacheKey(for: request)
+                pipeline.delegate.willCache(data: data, image: nil, for: request, pipeline: pipeline) {
+                    guard let data = $0 else { return }
+                    dataCache.storeData(data, for: key)
+                }
+            }
+
+            send(value: (data, nil), isCompleted: true)
+        case .failure(let error):
+            send(error: .dataLoadingFailed(error))
+        }
+    }
+
+    private func shouldStoreDataInDiskCache() -> Bool {
+        let policy = pipeline.configuration.dataCachePolicy
+        guard imageTasks.contains(where: { !$0.request.options.contains(.disableDiskCacheWrites) }) else {
+            return false
+        }
+        return policy == .storeOriginalData || policy == .storeAll || (policy == .automatic && imageTasks.contains { $0.request.processors.isEmpty })
     }
 }
